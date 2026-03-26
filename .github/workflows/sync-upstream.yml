@@ -1,12 +1,10 @@
 name: Sync Upstream
 
-# Runs daily at 08:00 UTC (16:00 CST) and on every push to main
+# Check for upstream changes every 6 hours and on manual trigger
 on:
   schedule:
-    - cron: '0 8 * * *'
-  push:
-    branches: [main]
-  workflow_dispatch: # Allow manual trigger
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,13 +18,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/xpzouying/xiaohongshu-mcp.git
           git fetch upstream main
@@ -36,18 +35,21 @@ jobs:
         run: |
           BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
-          echo "Upstream is $BEHIND commits ahead"
+          if [ "$BEHIND" = "0" ]; then
+            echo "Already up to date with upstream"
+          else
+            echo "Upstream is $BEHIND commits ahead"
+          fi
 
       - name: Attempt merge
         if: steps.check.outputs.behind != '0'
         id: merge
         run: |
-          git merge upstream/main --no-edit 2>&1 | tee /tmp/merge-output.txt
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          if git merge upstream/main --no-edit; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
             echo "conflict=true" >> "$GITHUB_OUTPUT"
             git merge --abort
-          else
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Push clean merge
@@ -56,54 +58,50 @@ jobs:
 
       - name: Create PR for conflicts
         if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="sync-upstream-$(date +%Y%m%d)"
+          BRANCH="sync-upstream-$(date +%Y%m%d-%H%M)"
           git checkout -b "$BRANCH"
           git merge upstream/main --no-edit || true
-
-          # Stage conflict markers so the PR shows what needs resolving
           git add -A
-          git commit -m "chore: sync upstream (conflicts need manual resolution)" || true
+          git commit -m "chore: sync upstream (conflicts need resolution)" || true
           git push origin "$BRANCH"
 
-          CONFLICT_FILES=$(grep -rl '<<<<<<<' . --include='*.go' --include='Dockerfile' 2>/dev/null | tr '\n' ', ' || echo "See merge output")
+          CONFLICT_FILES=$(grep -rl '<<<<<<<' . --include='*.go' --include='Dockerfile' 2>/dev/null | tr '\n' ' ' || echo "unknown")
 
           gh pr create \
             --title "chore: sync upstream ($(date +%Y-%m-%d))" \
             --body "## Upstream Sync
 
-          Upstream has new commits that conflict with our fork modifications.
+          Upstream has new commits that conflict with our modifications.
 
-          **Conflicts detected in:** ${CONFLICT_FILES}
+          **Conflicts in:** ${CONFLICT_FILES}
 
-          **Our modifications (likely conflict sources):**
+          **Our modified files:**
           - \`browser/browser.go\` — Chrome 132+ headless fix
           - \`Dockerfile\` — Chrome auto-update disabled
+          - \`service.go\` — error handling improvements
 
-          **Action needed:** Resolve conflicts manually, ensuring our Chrome 132+ fixes are preserved." \
-            --label "upstream-sync"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          Resolve conflicts, then rebuild Docker image locally."
 
   build-test:
     needs: sync
-    if: always()
+    if: needs.sync.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
 
-      - name: Build
-        run: |
-          go build -o /tmp/app .
-          echo "Build successful"
+      - name: Go build
+        run: go build -o /tmp/app .
 
-      - name: Docker build test
-        run: |
-          docker build -t xiaohongshu-mcp:test .
-          echo "Docker build successful"
+      - name: Docker build
+        run: docker build -t xiaohongshu-mcp:test .
