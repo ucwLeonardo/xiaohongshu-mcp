@@ -325,7 +325,23 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	// 工具 9: 发表评论
+	// 工具 9: 获取当前登录用户信息
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_my_profile",
+			Description: "获取当前登录用户的个人信息（通过侧边栏导航），返回用户名、头像、简介、粉丝数等。无需参数，自动获取当前已登录账号的信息",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "Get My Profile",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("get_my_profile", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+			result := appServer.handleGetMyProfile(ctx)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	// 工具 10: 发表评论
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "post_comment_to_feed",

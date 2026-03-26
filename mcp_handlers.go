@@ -535,6 +535,40 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 	}
 }
 
+// handleGetMyProfile 获取当前登录用户的个人信息（无需参数）
+func (s *AppServer) handleGetMyProfile(ctx context.Context) *MCPToolResult {
+	logrus.Info("MCP: 获取当前登录用户信息")
+
+	result, err := s.xiaohongshuService.GetMyProfile(ctx)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "获取个人信息失败: " + err.Error(),
+			}},
+			IsError: true,
+		}
+	}
+
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: fmt.Sprintf("获取个人信息成功，但序列化失败: %v", err),
+			}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: string(jsonData),
+		}},
+	}
+}
+
 // handleLikeFeed 处理点赞/取消点赞
 func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interface{}) *MCPToolResult {
 	feedID, ok := args["feed_id"].(string)
