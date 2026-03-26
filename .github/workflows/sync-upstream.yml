@@ -66,23 +66,21 @@ jobs:
           git commit -m "chore: sync upstream (conflicts need manual resolution)" || true
           git push origin "$BRANCH"
 
+          CONFLICT_FILES=$(grep -rl '<<<<<<<' . --include='*.go' --include='Dockerfile' 2>/dev/null | tr '\n' ', ' || echo "See merge output")
+
           gh pr create \
             --title "chore: sync upstream ($(date +%Y-%m-%d))" \
-            --body "$(cat <<'EOF'
-          ## Upstream Sync
+            --body "## Upstream Sync
 
           Upstream has new commits that conflict with our fork modifications.
 
-          **Conflicts detected in:**
-          $(grep -l '<<<<<<<' $(git diff --name-only upstream/main) 2>/dev/null || echo "See merge output")
+          **Conflicts detected in:** ${CONFLICT_FILES}
 
           **Our modifications (likely conflict sources):**
-          - `browser/browser.go` — Chrome 132+ headless fix
-          - `Dockerfile` — Chrome auto-update disabled
+          - \`browser/browser.go\` — Chrome 132+ headless fix
+          - \`Dockerfile\` — Chrome auto-update disabled
 
-          **Action needed:** Resolve conflicts manually, ensuring our Chrome 132+ fixes are preserved.
-          EOF
-          )" \
+          **Action needed:** Resolve conflicts manually, ensuring our Chrome 132+ fixes are preserved." \
             --label "upstream-sync"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

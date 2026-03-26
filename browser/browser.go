@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 
@@ -13,34 +14,38 @@ import (
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 )
 
-// defaultUserAgent matches the one in headless_browser package.
-const defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
 // Browser wraps a go-rod browser with Chrome 132+ headless compatibility.
-// Replaces headless_browser.Browser to fix "Multiple targets are not
-// supported in headless mode" error in Chrome 132+.
+//
+// Chrome 132 removed --headless=old and the new headless mode rejects
+// --no-startup-window ("Multiple targets are not supported in headless mode").
+// This type configures go-rod's launcher directly, setting only --headless
+// without --no-startup-window.
 type Browser struct {
 	browser  *rod.Browser
 	launcher *launcher.Launcher
 }
 
-// Close closes the browser and cleans up resources.
+// Close closes the browser and cleans up launcher resources.
 func (b *Browser) Close() {
-	b.browser.MustClose()
-	b.launcher.Cleanup()
+	defer b.launcher.Cleanup()
+	if err := b.browser.Close(); err != nil {
+		logrus.Warnf("failed to close browser: %v", err)
+	}
 }
 
 // NewPage creates a new page with stealth mode enabled.
-func (b *Browser) NewPage() *rod.Page {
-	return stealth.MustPage(b.browser)
+func (b *Browser) NewPage() (*rod.Page, error) {
+	return stealth.Page(b.browser)
 }
 
 type browserConfig struct {
 	binPath string
 }
 
+// Option configures browser creation.
 type Option func(*browserConfig)
 
+// WithBinPath sets a custom Chrome/Chromium binary path.
 func WithBinPath(binPath string) Option {
 	return func(c *browserConfig) {
 		c.binPath = binPath
@@ -62,22 +67,18 @@ func maskProxyCredentials(proxyURL string) string {
 }
 
 // NewBrowser creates a browser instance with Chrome 132+ headless compatibility.
-//
-// Chrome 132+ removed --headless=old. The new headless mode rejects
-// --no-startup-window (which go-rod's launcher.Headless(true) sets).
-// We configure go-rod's launcher directly, setting only --headless
-// without --no-startup-window.
-func NewBrowser(headless bool, options ...Option) *Browser {
+func NewBrowser(headless bool, options ...Option) (*Browser, error) {
 	cfg := &browserConfig{}
 	for _, opt := range options {
 		opt(cfg)
 	}
 
 	l := launcher.New().
-		Set("no-sandbox").
-		Set("user-agent", defaultUserAgent)
+		Set("no-sandbox")
 
-	// Set headless WITHOUT --no-startup-window (Chrome 132+ fix)
+	// Set headless WITHOUT --no-startup-window (Chrome 132+ fix).
+	// go-rod's Headless(true) sets both --headless and --no-startup-window,
+	// which Chrome 132+ rejects. We set --headless directly instead.
 	if headless {
 		l = l.Set("headless")
 		l = l.Delete("no-startup-window")
@@ -92,11 +93,17 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 		logrus.Infof("Using proxy: %s", maskProxyCredentials(proxy))
 	}
 
-	debugURL := l.MustLaunch()
+	debugURL, err := l.Launch()
+	if err != nil {
+		l.Cleanup()
+		return nil, fmt.Errorf("failed to launch browser: %w", err)
+	}
 
-	b := rod.New().
-		ControlURL(debugURL).
-		MustConnect()
+	b := rod.New().ControlURL(debugURL)
+	if err := b.Connect(); err != nil {
+		l.Cleanup()
+		return nil, fmt.Errorf("failed to connect to browser: %w", err)
+	}
 
 	// Load cookies
 	cookiePath := cookies.GetCookiesFilePath()
@@ -106,8 +113,9 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 		var cks []*proto.NetworkCookie
 		if err := json.Unmarshal(data, &cks); err != nil {
 			logrus.Warnf("failed to unmarshal cookies: %v", err)
+		} else if err := b.SetCookies(proto.CookiesToParams(cks)); err != nil {
+			logrus.Warnf("failed to set cookies: %v", err)
 		} else {
-			b.MustSetCookies(cks...)
 			logrus.Debugf("loaded cookies from file successfully")
 		}
 	} else {
@@ -117,5 +125,5 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 	return &Browser{
 		browser:  b,
 		launcher: l,
-	}
+	}, nil
 }

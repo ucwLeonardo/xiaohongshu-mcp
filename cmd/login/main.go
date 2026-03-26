@@ -20,10 +20,16 @@ func main() {
 	flag.Parse()
 
 	// 登录的时候，需要界面，所以不能无头模式
-	b := browser.NewBrowser(false, browser.WithBinPath(binPath))
+	b, err := browser.NewBrowser(false, browser.WithBinPath(binPath))
+	if err != nil {
+		logrus.Fatalf("failed to create browser: %v", err)
+	}
 	defer b.Close()
 
-	page := b.NewPage()
+	page, err := b.NewPage()
+	if err != nil {
+		logrus.Fatalf("failed to create page: %v", err)
+	}
 	defer page.Close()
 
 	action := xiaohongshu.NewLogin(page)
