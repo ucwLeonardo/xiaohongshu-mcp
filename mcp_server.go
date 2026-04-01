@@ -93,6 +93,11 @@ type LikeFeedArgs struct {
 	Unlike    bool   `json:"unlike,omitempty" jsonschema:"是否取消点赞，true为取消点赞，false或未设置则为点赞"`
 }
 
+// SubmitVerificationCodeArgs 提交验证码参数
+type SubmitVerificationCodeArgs struct {
+	Code string `json:"code" jsonschema:"短信验证码"`
+}
+
 // FavoriteFeedArgs 收藏参数
 type FavoriteFeedArgs struct {
 	FeedID     string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
@@ -181,6 +186,21 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		},
 		withPanicRecovery("get_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetLoginQrcode(ctx)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	// 工具 2b: 提交短信验证码
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "submit_verification_code",
+			Description: "提交短信验证码（扫码登录后如需短信验证，调用此工具输入验证码）",
+			Annotations: &mcp.ToolAnnotations{
+				Title: "Submit Verification Code",
+			},
+		},
+		withPanicRecovery("submit_verification_code", func(ctx context.Context, req *mcp.CallToolRequest, args SubmitVerificationCodeArgs) (*mcp.CallToolResult, any, error) {
+			result := appServer.handleSubmitVerificationCode(ctx, args.Code)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -459,7 +479,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 13)
+	logrus.Infof("Registered %d MCP tools", 14)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式

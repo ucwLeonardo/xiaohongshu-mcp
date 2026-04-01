@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -18,7 +19,11 @@ import (
 )
 
 // XiaohongshuService 小红书业务服务
-type XiaohongshuService struct{}
+type XiaohongshuService struct {
+	mu          sync.Mutex
+	loginAction *xiaohongshu.LoginAction // active login session (non-nil during QR flow)
+	loginPage   *rod.Page                // page kept alive during QR login
+}
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
@@ -100,7 +105,33 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 }
 
 // CheckLoginStatus 检查登录状态
+// If there is an active login session (QR flow in progress), check the login
+// page directly instead of creating a new browser. This is critical for the
+// SMS verification flow: after submitting the code, the active page may have
+// completed login but cookies haven't been saved yet.
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
+	s.mu.Lock()
+	activePage := s.loginPage
+	s.mu.Unlock()
+
+	// If there's an active login session, check the login page directly
+	if activePage != nil {
+		logrus.Info("[CheckLoginStatus] active login session found, checking login page directly")
+		pp := activePage.Context(ctx)
+		el, err := pp.Timeout(3 * time.Second).Element(".main-container .user .link-wrapper .channel")
+		if err == nil && el != nil {
+			logrus.Info("[CheckLoginStatus] login SUCCESS detected on active page, saving cookies")
+			// Login succeeded — save cookies immediately
+			if er := saveCookies(activePage); er != nil {
+				logrus.Errorf("[CheckLoginStatus] failed to save cookies: %v", er)
+			}
+			return &LoginStatusResponse{IsLoggedIn: true, Username: configs.Username}, nil
+		}
+		logrus.Info("[CheckLoginStatus] login not yet detected on active page")
+		return &LoginStatusResponse{IsLoggedIn: false}, nil
+	}
+
+	// No active login session — create a new browser to check saved cookies
 	b, err := newBrowser()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create browser: %w", err)
@@ -158,14 +189,30 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	timeout := 4 * time.Minute
 
 	if !loggedIn {
+		// Store the active login session so submit_verification_code can access it
+		s.mu.Lock()
+		s.loginAction = loginAction
+		s.loginPage = page
+		s.mu.Unlock()
+		logrus.Infof("[LoginSession] started, timeout=%v, loginAction stored", timeout)
+
 		go func() {
 			ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
-			defer deferFunc()
+			defer func() {
+				logrus.Infof("[LoginSession] cleaning up loginAction/loginPage")
+				s.mu.Lock()
+				s.loginAction = nil
+				s.loginPage = nil
+				s.mu.Unlock()
+				deferFunc()
+			}()
 
-			if loginAction.WaitForLogin(ctxTimeout) {
+			result := loginAction.WaitForLogin(ctxTimeout)
+			logrus.Infof("[LoginSession] WaitForLogin returned=%v", result)
+			if result {
 				if er := saveCookies(page); er != nil {
-					logrus.Errorf("failed to save cookies: %v", er)
+					logrus.Errorf("[LoginSession] failed to save cookies: %v", er)
 				}
 			}
 		}()
@@ -181,6 +228,28 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 		Img:        img,
 		IsLoggedIn: loggedIn,
 	}, nil
+}
+
+// SubmitVerificationCode submits an SMS verification code to the active login page.
+func (s *XiaohongshuService) SubmitVerificationCode(ctx context.Context, code string) error {
+	s.mu.Lock()
+	action := s.loginAction
+	hasPage := s.loginPage != nil
+	s.mu.Unlock()
+
+	logrus.Infof("[VerifyCode] service: loginAction=%v loginPage=%v", action != nil, hasPage)
+
+	if action == nil {
+		return fmt.Errorf("当前没有进行中的登录流程，请先获取二维码")
+	}
+
+	err := action.SubmitVerificationCode(ctx, code)
+	if err != nil {
+		logrus.Errorf("[VerifyCode] service: failed: %v", err)
+	} else {
+		logrus.Infof("[VerifyCode] service: completed successfully")
+	}
+	return err
 }
 
 // PublishContent 发布内容

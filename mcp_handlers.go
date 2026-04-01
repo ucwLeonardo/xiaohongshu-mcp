@@ -58,6 +58,22 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 	}
 }
 
+// handleSubmitVerificationCode 处理提交短信验证码请求。
+func (s *AppServer) handleSubmitVerificationCode(ctx context.Context, code string) *MCPToolResult {
+	logrus.Infof("MCP: 提交验证码 (code=%s)", code)
+
+	if err := s.xiaohongshuService.SubmitVerificationCode(ctx, code); err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: "提交验证码失败: " + err.Error()}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{
+		Content: []MCPContent{{Type: "text", Text: "验证码已提交，请等待登录完成"}},
+	}
+}
+
 // handleGetLoginQrcode 处理获取登录二维码请求。
 // 返回二维码图片的 Base64 编码和超时时间，供前端展示扫码登录。
 func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {

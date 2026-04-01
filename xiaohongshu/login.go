@@ -5,7 +5,10 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 type LoginAction struct {
@@ -98,4 +101,74 @@ func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 			}
 		}
 	}
+}
+
+// SubmitVerificationCode fills the SMS verification code input on the
+// login page and clicks the submit button. This is used when XHS requires
+// additional SMS verification after QR code scan.
+func (a *LoginAction) SubmitVerificationCode(ctx context.Context, code string) error {
+	pp := a.page.Context(ctx)
+	start := time.Now()
+	logrus.Infof("[VerifyCode] START code_len=%d page_url=%s", len(code), a.page.MustInfo().URL)
+
+	// Try multiple CSS selectors for the verification code input
+	inputSelectors := []string{
+		`input[placeholder*="验证码"]`,
+		`input[placeholder*="code"]`,
+		`input[type="tel"]`,
+		`input[type="number"]`,
+		`input[type="text"]`,
+	}
+
+	var filled bool
+	for _, sel := range inputSelectors {
+		logrus.Infof("[VerifyCode] trying input selector: %s", sel)
+		el, err := pp.Timeout(2 * time.Second).Element(sel)
+		if err != nil || el == nil {
+			logrus.Infof("[VerifyCode]   not found or error: %v", err)
+			continue
+		}
+		logrus.Infof("[VerifyCode]   FOUND, filling code")
+		_ = el.SelectAllText()
+		if err := el.Input(code); err != nil {
+			logrus.Warnf("[VerifyCode]   input failed: %v", err)
+			continue
+		}
+		filled = true
+		break
+	}
+
+	if !filled {
+		logrus.Errorf("[VerifyCode] FAIL no input found, duration=%dms", time.Since(start).Milliseconds())
+		return errors.New("未找到验证码输入框")
+	}
+
+	// Primary approach: press Enter to submit (works regardless of button type/text)
+	logrus.Infof("[VerifyCode] pressing Enter to submit")
+	if err := pp.Keyboard.Press(input.Enter); err != nil {
+		logrus.Warnf("[VerifyCode] Enter key failed: %v", err)
+	} else {
+		logrus.Infof("[VerifyCode] DONE pressed Enter, duration=%dms", time.Since(start).Milliseconds())
+		return nil
+	}
+
+	// Fallback: try to click submit buttons by text
+	buttonTexts := []string{"确定", "确认", "登录", "验证", "提交"}
+	for _, text := range buttonTexts {
+		logrus.Infof("[VerifyCode] trying button text: %s", text)
+		// Search all clickable elements, not just <button>
+		el, err := pp.Timeout(1 * time.Second).ElementR("*", text)
+		if err != nil || el == nil {
+			continue
+		}
+		if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			logrus.Warnf("[VerifyCode]   click failed: %v", err)
+			continue
+		}
+		logrus.Infof("[VerifyCode] DONE clicked element=%q duration=%dms", text, time.Since(start).Milliseconds())
+		return nil
+	}
+
+	logrus.Warnf("[VerifyCode] DONE code filled but no submit method worked, duration=%dms", time.Since(start).Milliseconds())
+	return nil
 }
