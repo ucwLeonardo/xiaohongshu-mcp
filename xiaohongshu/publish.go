@@ -2,6 +2,7 @@ package xiaohongshu
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -36,6 +37,8 @@ const (
 )
 
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
+	publishStart := time.Now()
+	slog.Info("[publish-trace] 开始创建发布动作，导航到发布页面", "url", urlOfPublic)
 
 	pp := page.Timeout(300 * time.Second)
 
@@ -43,6 +46,7 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 	if err := pp.Navigate(urlOfPublic); err != nil {
 		return nil, errors.Wrap(err, "导航到发布页面失败")
 	}
+	slog.Info("[publish-trace] 导航完成", "elapsed", time.Since(publishStart))
 
 	// 等待页面加载，使用 WaitLoad 代替 WaitIdle（更宽松）
 	if err := pp.WaitLoad(); err != nil {
@@ -50,16 +54,24 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 	}
 	time.Sleep(2 * time.Second)
 
+	// 记录当前页面 URL，检测是否被重定向
+	currentURL := pp.MustInfo().URL
+	slog.Info("[publish-trace] 页面加载后URL", "url", currentURL)
+
 	// 等待页面稳定
 	if err := pp.WaitDOMStable(time.Second, 0.1); err != nil {
 		logrus.Warnf("等待 DOM 稳定出现问题: %v，继续尝试", err)
 	}
 	time.Sleep(1 * time.Second)
 
+	// 截图记录页面状态
+	capturePageState(pp, "after-navigate")
+
 	if err := mustClickPublishTab(pp, "上传图文"); err != nil {
 		logrus.Errorf("点击上传图文 TAB 失败: %v", err)
 		return nil, err
 	}
+	slog.Info("[publish-trace] 已点击'上传图文'TAB", "elapsed", time.Since(publishStart))
 
 	time.Sleep(1 * time.Second)
 
@@ -69,15 +81,32 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 }
 
 func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent) error {
+	publishStart := time.Now()
+	slog.Info("[publish-trace] Publish 开始执行",
+		"title", content.Title,
+		"images", len(content.ImagePaths),
+		"tags", len(content.Tags),
+		"schedule", content.ScheduleTime,
+		"original", content.IsOriginal,
+		"visibility", content.Visibility,
+	)
+
 	if len(content.ImagePaths) == 0 {
 		return errors.New("图片不能为空")
 	}
 
 	page := p.page.Context(ctx)
 
+	// 截图：上传图片前
+	capturePageState(page, "before-upload")
+
 	if err := uploadImages(page, content.ImagePaths); err != nil {
 		return errors.Wrap(err, "小红书上传图片失败")
 	}
+	slog.Info("[publish-trace] 图片上传完成", "elapsed", time.Since(publishStart))
+
+	// 截图：上传图片后
+	capturePageState(page, "after-upload")
 
 	tags := content.Tags
 	if len(tags) >= 10 {
@@ -91,7 +120,35 @@ func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent
 		return errors.Wrap(err, "小红书发布失败")
 	}
 
+	slog.Info("[publish-trace] Publish 全流程完成", "total_elapsed", time.Since(publishStart))
 	return nil
+}
+
+// capturePageState 截图并记录页面 HTML 快照用于调试
+func capturePageState(page *rod.Page, label string) {
+	ts := time.Now().Format("150405")
+	screenshotPath := fmt.Sprintf("/tmp/publish-trace/%s_%s.png", ts, label)
+
+	// 确保目录存在
+	os.MkdirAll("/tmp/publish-trace", 0755)
+
+	// 截图
+	data, err := page.Screenshot(true, nil)
+	if err != nil {
+		slog.Warn("[publish-trace] 截图失败", "label", label, "error", err)
+	} else {
+		if err := os.WriteFile(screenshotPath, data, 0644); err != nil {
+			slog.Warn("[publish-trace] 保存截图失败", "label", label, "error", err)
+		} else {
+			slog.Info("[publish-trace] 截图已保存", "label", label, "path", screenshotPath, "size", len(data))
+		}
+	}
+
+	// 记录页面标题和 URL
+	info, err := page.Info()
+	if err == nil {
+		slog.Info("[publish-trace] 页面状态", "label", label, "title", info.Title, "url", info.URL)
+	}
 }
 
 func removePopCover(page *rod.Page) {
@@ -272,6 +329,9 @@ func waitForUploadComplete(page *rod.Page, expectedCount int) error {
 }
 
 func submitPublish(page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string) error {
+	submitStart := time.Now()
+	slog.Info("[publish-trace] submitPublish 开始", "title_len", len(title), "content_len", len(content), "tags", len(tags))
+
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
 		return errors.Wrap(err, "查找标题输入框失败")
@@ -279,6 +339,7 @@ func submitPublish(page *rod.Page, title, content string, tags []string, schedul
 	if err := titleElem.Input(title); err != nil {
 		return errors.Wrap(err, "输入标题失败")
 	}
+	slog.Info("[publish-trace] 标题已输入", "elapsed", time.Since(submitStart))
 
 	// 检查标题长度
 	time.Sleep(500 * time.Millisecond)
@@ -296,6 +357,8 @@ func submitPublish(page *rod.Page, title, content string, tags []string, schedul
 	if err := contentElem.Input(content); err != nil {
 		return errors.Wrap(err, "输入正文失败")
 	}
+	slog.Info("[publish-trace] 正文已输入", "elapsed", time.Since(submitStart))
+
 	if err := waitAndClickTitleInput(titleElem); err != nil {
 		return err
 	}
@@ -338,15 +401,62 @@ func submitPublish(page *rod.Page, title, content string, tags []string, schedul
 		return errors.Wrap(err, "绑定商品失败")
 	}
 
+	// 截图：点击发布按钮前的页面状态
+	capturePageState(page, "before-submit-click")
+
+	slog.Info("[publish-trace] 准备查找发布按钮", "selector", ".publish-page-publish-btn button.bg-red")
+
 	submitButton, err := page.Element(".publish-page-publish-btn button.bg-red")
 	if err != nil {
 		return errors.Wrap(err, "查找发布按钮失败")
 	}
+
+	// 检查按钮状态
+	btnText, _ := submitButton.Text()
+	btnVisible := isElementVisible(submitButton)
+	btnBlocked, _ := isElementBlocked(submitButton)
+	btnDisabled, _ := submitButton.Eval(`() => this.disabled || this.classList.contains('disabled') || this.getAttribute('aria-disabled') === 'true'`)
+	slog.Info("[publish-trace] 发布按钮状态",
+		"text", btnText,
+		"visible", btnVisible,
+		"blocked", btnBlocked,
+		"disabled", btnDisabled.Value,
+		"elapsed", time.Since(submitStart),
+	)
+
 	if err := submitButton.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return errors.Wrap(err, "点击发布按钮失败")
 	}
+	slog.Info("[publish-trace] 已点击发布按钮，等待页面响应...", "elapsed", time.Since(submitStart))
 
+	// 等待并检查发布结果
 	time.Sleep(3 * time.Second)
+
+	// 截图：点击发布按钮后的页面状态
+	capturePageState(page, "after-submit-click")
+
+	// 检查发布后的页面状态
+	postSubmitURL := page.MustInfo().URL
+	slog.Info("[publish-trace] 发布按钮点击后页面URL", "url", postSubmitURL, "elapsed", time.Since(submitStart))
+
+	// 检查是否出现错误提示
+	if hasError, errElem, _ := page.Has("div.d-toast, div.toast-container, div.error-message, div.d-notification"); hasError {
+		errText, _ := errElem.Text()
+		slog.Warn("[publish-trace] 页面出现提示信息", "text", errText)
+	}
+
+	// 检查发布按钮是否还在（如果成功发布，页面通常会跳转或按钮消失）
+	stillHasBtn, _, _ := page.Has(".publish-page-publish-btn button.bg-red")
+	slog.Info("[publish-trace] 发布后按钮是否仍存在", "still_exists", stillHasBtn)
+
+	// 检查是否跳转到成功页面或仍在发布页面
+	if strings.Contains(postSubmitURL, "publish") && stillHasBtn {
+		slog.Warn("[publish-trace] ⚠️ 页面未跳转且发布按钮仍在，发布可能未成功")
+	} else {
+		slog.Info("[publish-trace] ✅ 页面已变化，发布可能成功", "url", postSubmitURL)
+	}
+
+	slog.Info("[publish-trace] submitPublish 完成", "total_elapsed", time.Since(submitStart))
 	return nil
 }
 
